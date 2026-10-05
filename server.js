@@ -1,267 +1,233 @@
-// ==========================================
-// IMPORT MODULES
-// ==========================================
-
 const express = require("express");
+const path=require("path");
 const fs = require("fs");
 const EventEmitter = require("events");
-const path = require("path");
-
-
-// ==========================================
-// CREATE EXPRESS APP
-// ==========================================
+const { MongoClient } = require("mongodb");
 
 const app = express();
 
 const PORT = 3000;
 
 
-// ==========================================
-// FILE LOCATIONS
-// ==========================================
+// MongoDB connection
+const client = new MongoClient("mongodb://localhost:27017");
 
-// Location of users.json
-const usersFile = path.join(__dirname, "users.json");
-
-// Location of audit.log
-const auditFile = path.join(__dirname, "audit.log");
+let usersCollection;
 
 
-// ==========================================
-// MIDDLEWARE
-// ==========================================
+// Audit file
+const auditFile = "audit.log";
 
-// Allow Express to read JSON data
+
+// Middleware
 app.use(express.json());
 
-// Serve files from the public folder
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static("public"));
 
 
-// ==========================================
-// FUNCTIONS FOR users.json
-// ==========================================
-
-// Read users from users.json
-function readUsers() {
-
-    const data = fs.readFileSync(usersFile, "utf8");
-
-    return JSON.parse(data);
-}
-
-
-// Save users to users.json
-function saveUsers(users) {
-
-    fs.writeFileSync(
-        usersFile,
-        JSON.stringify(users, null, 2),
-        "utf8"
-    );
-}
-
-
-// ==========================================
-// EVENT SYSTEM
-// ==========================================
-
-// Create our own EventEmitter
+// Create EventEmitter
 const userEvents = new EventEmitter();
 
 
-// ==========================================
-// SIGNUP EVENT
-// ==========================================
-
-userEvents.on("signup", function(user) {
+// SIGN UP EVENT
+userEvents.on("signup", (user) => {
 
     const message =
-        `[${new Date().toISOString()}] SIGNUP: ${user.email}\n`;
+        `[${new Date().toLocaleString()}] SIGNUP: ${user.email}\n`;
 
-    fs.appendFileSync(
-        auditFile,
-        message,
-        "utf8"
-    );
+    fs.appendFileSync(auditFile, message);
 
-    console.log("Signup event recorded:", user.email);
+    console.log(message.trim());
+
 });
 
 
-// ==========================================
 // LOGIN EVENT
-// ==========================================
-
-userEvents.on("login", function(user) {
+userEvents.on("login", (user) => {
 
     const message =
-        `[${new Date().toISOString()}] LOGIN: ${user.email}\n`;
+        `[${new Date().toLocaleString()}] LOGIN: ${user.email}\n`;
 
-    fs.appendFileSync(
-        auditFile,
-        message,
-        "utf8"
-    );
+    fs.appendFileSync(auditFile, message);
 
-    console.log("Login event recorded:", user.email);
+    console.log(message.trim());
+
 });
 
 
-// ==========================================
 // SIGN UP ROUTE
-// POST /signup
-// ==========================================
+app.post("/signup", async (req, res) => {
 
-app.post("/signup", function(req, res) {
+    try {
 
-    // Get information sent from the browser
-    const { name, email, password } = req.body;
+        const { name, email, password } = req.body;
 
 
-    // Check if all information was provided
-    if (!name || !email || !password) {
+        // Check empty fields
+        if (!name || !email || !password) {
 
-        return res.status(400).json({
+            return res.status(400).json({
+                success: false,
+                message: "Please fill in all fields."
+            });
+
+        }
+
+
+        // Check if email already exists
+        const existingUser = await usersCollection.findOne({
+            email: email.toLowerCase()
+        });
+
+
+        if (existingUser) {
+
+            return res.status(400).json({
+                success: false,
+                message: "Email already registered."
+            });
+
+        }
+
+
+        // Create new user
+        const newUser = {
+            name: name,
+            email: email.toLowerCase(),
+            password: password
+        };
+
+
+        // Save user to MongoDB
+        await usersCollection.insertOne(newUser);
+
+
+        // Emit signup event
+        userEvents.emit("signup", newUser);
+
+
+        // Send response
+        res.json({
+            success: true,
+            message: "Registration successful!"
+        });
+
+    } catch (error) {
+
+        console.error("Signup error:", error);
+
+        res.status(500).json({
             success: false,
-            message: "Please fill in all fields."
+            message: "Server error."
         });
 
     }
-
-
-    // Read existing users
-    const users = readUsers();
-
-
-    // Check whether email already exists
-    const existingUser = users.find(function(user) {
-
-        return user.email.toLowerCase() === email.toLowerCase();
-
-    });
-
-
-    if (existingUser) {
-
-        return res.status(400).json({
-            success: false,
-            message: "An account with this email already exists."
-        });
-
-    }
-
-
-    // Create new user
-    const newUser = {
-
-        name: name,
-        email: email,
-        password: password
-
-    };
-
-
-    // Add new user to array
-    users.push(newUser);
-
-
-    // Save updated users
-    saveUsers(users);
-
-
-    // Trigger signup event
-    userEvents.emit("signup", newUser);
-
-
-    // Send success response
-    res.json({
-
-        success: true,
-        message: "Account created successfully!"
-
-    });
 
 });
 
 
-// ==========================================
 // LOGIN ROUTE
-// POST /login
-// ==========================================
+app.post("/login", async (req, res) => {
 
-app.post("/login", function(req, res) {
+    try {
 
-    // Get email and password
-    const { email, password } = req.body;
+        const { email, password } = req.body;
 
 
-    // Check that information was provided
-    if (!email || !password) {
+        // Check empty fields
+        if (!email || !password) {
 
-        return res.status(400).json({
+            return res.status(400).json({
+                success: false,
+                message: "Please enter email and password."
+            });
 
+        }
+
+
+        // Find user in MongoDB
+        const user = await usersCollection.findOne({
+            email: email.toLowerCase(),
+            password: password
+        });
+
+
+        // User not found
+        if (!user) {
+
+            return res.status(401).json({
+                success: false,
+                message: "Invalid email or password."
+            });
+
+        }
+
+
+        // Emit login event
+        userEvents.emit("login", user);
+
+
+        // Send success response
+        res.json({
+            success: true,
+            message: "Login successful!",
+            name: user.name
+        });
+
+    } catch (error) {
+
+        console.error("Login error:", error);
+
+        res.status(500).json({
             success: false,
-            message: "Please enter your email and password."
-
+            message: "Server error."
         });
 
     }
 
-
-    // Read users from users.json
-    const users = readUsers();
+});
 
 
-    // Look for matching email and password
-    const user = users.find(function(user) {
+// Connect to MongoDB and start server
+async function startServer() {
 
-        return (
-            user.email.toLowerCase() === email.toLowerCase() &&
-            user.password === password
-        );
+    try {
 
-    });
+        // Connect to MongoDB
+        await client.connect();
+
+        console.log("Connected to MongoDB");
 
 
-    // If no matching user was found
-    if (!user) {
+        // Select database
+        const database = client.db("loginDB");
 
-        return res.status(401).json({
 
-            success: false,
-            message: "Invalid email or password."
+        // Select collection
+        usersCollection = database.collection("users");
+
+
+        console.log("Database: loginDB");
+        console.log("Collection: users");
+
+
+        // Start server
+        app.listen(PORT, () => {
+
+            console.log(
+                `Server running at http://localhost:${PORT}`
+            );
 
         });
 
+    } catch (error) {
+
+        console.error("MongoDB connection failed:", error);
+
     }
 
-
-    // Trigger login event
-    userEvents.emit("login", user);
+}
 
 
-    // Send successful response
-    res.json({
-
-        success: true,
-        message: "Login successful!",
-        name: user.name
-
-    });
-
-});
-
-
-// ==========================================
-// START SERVER
-// ==========================================
-
-app.listen(PORT, function() {
-
-    console.log(
-        `Server running at http://localhost:${PORT}`
-    );
-
-});
+// Start application
+startServer();
